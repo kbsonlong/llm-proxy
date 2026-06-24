@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import litellm
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -74,6 +75,11 @@ class TokenTracker(CustomLogger):
         raw_global = limits_cfg.get("global")
         self.global_limit: int | None = int(raw_global) if raw_global is not None else None
 
+        # fallback 链: { model_name: [候选模型1, 候选模型2, ...] }
+        self.fallbacks: dict[str, list[str]] = {
+            k: list(v) for k, v in (limits_cfg.get("fallbacks") or {}).items()
+        }
+
         # ── 加载已用数据 ────────────────────────────────────────
         self.usage: dict = self._load()
 
@@ -111,8 +117,8 @@ class TokenTracker(CustomLogger):
 
     # ── 配额检查 ────────────────────────────────────────────────
 
-    def _check_limits(self, model: str | None) -> None:
-        """检查全局 + 指定模型是否超限，超限抛 429。"""
+    def _is_over_limit(self, model: str | None) -> dict:
+        """检查全局 + 指定模型是否超限，返回超限详情 dict（空 = 未超限）。"""
         errors = {}
 
         # 全局检查
@@ -129,7 +135,63 @@ class TokenTracker(CustomLogger):
             if used >= limit:
                 errors[model] = {"used": used, "limit": limit}
 
-        if errors:
+        return errors
+
+    async def _estimate_input_tokens(self, data: dict) -> int:
+        """估算当前请求的输入 token 数。
+
+        使用 litellm.acount_tokens 精确计数，失败时降级为 0（不做前置预估）。
+        """
+        
+
+        try:
+            messages = data.get("messages") or []
+            if not messages:
+                return 0
+            model = data.get("model", "")
+            result = await litellm.acount_tokens(model=model, messages=messages)
+            return result.total_tokens or 0
+        except Exception:
+            return 0  # 降级：不进行输入预估
+
+    def _model_can_hold(self, model: str, input_tokens: int) -> bool:
+        """检查模型是否还能装下 input_tokens（已用量 + 输入量 ≤ 限额）。
+
+        无限额的模型视为可以。
+        """
+        limit = self.model_limits.get(model)
+        if limit is None:
+            return True
+        used = self.model_used.get(model, 0)
+        remaining = limit - used
+        if remaining <= 0:
+            return False
+        if input_tokens > 0 and remaining < input_tokens:
+            return False
+        return True
+
+    async def _async_pick_fallback(self, model: str, input_tokens: int) -> str | None:
+        """从 fallback 链中找一个配额充足且能装下 input_tokens 的模型。
+
+        返回选中的 model_name，链全部不可用时返回 None。
+        """
+        chain = (self.fallbacks or {}).get(model, [])
+        for candidate in chain:
+            if self._model_can_hold(candidate, input_tokens):
+                return candidate
+        return None
+
+    # ── hook 实现 ───────────────────────────────────────────────
+
+    async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
+        """请求前置检查 + 自动 fallback。"""
+        model = (data or {}).get("model")
+        if not model:
+            return None
+
+        # 第一步：全局超限 → 无条件 429（全局兜底不可 fallback）
+        errors = self._is_over_limit(None)
+        if errors.get("global"):
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -138,13 +200,31 @@ class TokenTracker(CustomLogger):
                 },
             )
 
-    # ── hook 实现 ───────────────────────────────────────────────
+        # 第二步：当前模型是否超限？
+        model_errors = self._is_over_limit(model)
+        if not model_errors.get(model):
+            return None  # 未超限，放行
 
-    async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
-        """请求前置检查。"""
-        model = (data or {}).get("model")
-        self._check_limits(model)
-        return None
+        # 第三步：模型超限，尝试 fallback
+        input_tokens = await self._estimate_input_tokens(data)
+        fallback = await self._async_pick_fallback(model, input_tokens)
+        if fallback:
+            print(
+                f"[token_tracker] FALLBACK {model} → {fallback} "
+                f"(input_est={input_tokens})"
+            )
+            data["model"] = fallback
+            return data
+
+        # 第四步：fallback 链全部不可用 → 429
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "token_limit_exceeded",
+                "limits": model_errors,
+                "note": f"fallback chain exhausted: {self.fallbacks.get(model, [])}",
+            },
+        )
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         """请求成功后累计 token。"""

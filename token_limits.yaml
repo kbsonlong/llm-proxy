@@ -4,3 +4,10 @@ models:
   doubao-smart-router: 500000
   glm-4-7: 500000
 global: 9999999
+
+# fallback 链：当某模型超限时自动转发到候选模型
+# 格式：{model_name: [候选1, 候选2, ...]}
+# 候选按顺序尝试，找到配额充足（已用量+输入量≤限额）的第一个为止
+fallbacks:
+  doubao-seed-1-6: [doubao-smart-router, glm-4-7]
+  doubao-seed-2-1-pro: [doubao-smart-router]
