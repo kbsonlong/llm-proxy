@@ -1,20 +1,4 @@
 services:
-  postgres:
-    image: agnohq/pgvector:18
-    container_name: litellm-postgres
-    environment:
-      POSTGRES_USER: litellm
-      POSTGRES_PASSWORD: litellm
-      POSTGRES_DB: litellm
-    volumes:
-      - postgres_data:/var/lib/postgresql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U litellm"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
   litellm-proxy:
     image: registry.cn-hangzhou.aliyuncs.com/seam/litellm:main-latest
     container_name: litellm-proxy
@@ -34,15 +18,12 @@ services:
       TOKEN_TRACK_MODE: "${TOKEN_TRACK_MODE:-APPEND}"
       TOKEN_DB_PATH: "/root/.litellm_token_usage.json"
       TOKEN_LIMITS_PATH: "/app/token_limits.yaml"
-      DATABASE_URL: "postgresql://litellm:litellm@postgres:5432/litellm"
+      PYTHONPATH: "/app"
     command:
       - "--config"
       - "/app/config.yaml"
       - "--port"
       - "4000"
-    depends_on:
-      postgres:
-        condition: service_healthy
     restart: unless-stopped
 
   sync-endpoints:
@@ -72,6 +53,3 @@ services:
     restart: unless-stopped
     depends_on:
       - litellm-proxy
-
-volumes:
-  postgres_data:

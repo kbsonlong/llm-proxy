@@ -139,7 +139,7 @@ global: 10000000               # 全局上限（所有模型合计，可选）
 }
 ```
 
-## 注意
+## 说明
 
 - **获取模型（ListEndpoints）** 和 **调用模型** 是两套不同的 API，因此需要两套不同的密钥
 - 管控面 API（ListEndpoints）使用 AK/SK V4 签名认证
@@ -147,3 +147,50 @@ global: 10000000               # 全局上限（所有模型合计，可选）
 - ListEndpoints 的 API 版本默认为 `2024-01-01`，可通过 `LIST_ENDPOINTS_VERSION` 环境变量自定义
 - sync-endpoints HTTP 服务监听 `0.0.0.0:9100`，如需安全加固建议配合 nginx 反向代理
 - 启动 litellm proxy 时必须同时加载 `config.gen.yaml`（模型列表居中文件）：`litellm --config config.yaml --config config.gen.yaml`
+
+## litellm UI 管理面板
+
+本项目默认关闭 UI 以降低资源消耗。如需使用 litellm 自带的管理面板（虚拟密钥、调用日志、用量图表），需启用 PostgreSQL。
+
+### 恢复 UI（挂载 PostgreSQL）
+
+```yaml
+# docker-compose.yml 在 services: 下新增
+services:
+  postgres:
+    image: agnohq/pgvector:18
+    container_name: litellm-postgres
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: litellm
+      POSTGRES_DB: litellm
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+```
+
+同时在 `litellm-proxy` 的 `environment` 中添加数据库连接：
+
+```yaml
+    environment:
+      DATABASE_URL: "postgresql://litellm:litellm@postgres:5432/litellm"
+    depends_on:
+      postgres:
+        condition: service_healthy
+```
+
+添加持久化卷声明：
+
+```yaml
+volumes:
+  postgres_data:
+```
+
+### UI 访问
+
+启动后访问 http://localhost:4000/gui，使用 `LITELLM_MASTER_KEY` 登录即可看到管理面板。
