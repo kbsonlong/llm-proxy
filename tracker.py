@@ -164,13 +164,12 @@ class TokenTracker(CustomLogger):
         if total == 0:
             return
 
-        # 优先用客户端请求时的原始 model_name，而非路由后的 endpoint ID
+        # 使用客户端传入的原始 model_name（model_group），而非路由后的 endpoint ID
         model = (
-            kwargs.get("proxy_server_request", {})
-            .get("body", {})
-            .get("model")
-        ) or kwargs.get("litellm_model_name") or kwargs.get("model")
-        print(f"[token_tracker] DEBUG model resolution: proxy_server_request.body.model={kwargs.get('proxy_server_request',{}).get('body',{}).get('model')!r}, litellm_model_name={kwargs.get('litellm_model_name')!r}, kwargs.model={kwargs.get('model')!r}, resolved={model!r}")
+            (kwargs.get("litellm_params") or {})
+            .get("metadata", {})
+            .get("model_group")
+        ) or kwargs.get("model")
 
         # 累计全局
         self.global_used += total
