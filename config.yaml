@@ -1,0 +1,25 @@
+litellm_settings:
+  callbacks: [tracker.token_tracker]
+  retry: false                     # 关闭内部重试，避免突破限流
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+# 模型列表由 sync_endpoints 生成，合并自 config.gen.yaml
+model_list:
+- model_name: doubao-seed-2-1-pro
+  litellm_params:
+    model: volcengine/ep-20260624132857-k27hr
+    api_key: os.environ/VOLCENGINE_API_KEY
+- model_name: glm-4-7
+  litellm_params:
+    model: volcengine/ep-20260617130017-qzq85
+    api_key: os.environ/VOLCENGINE_API_KEY
+- model_name: doubao-smart-router
+  litellm_params:
+    model: volcengine/ep-20260617125539-rnzzk
+    api_key: os.environ/VOLCENGINE_API_KEY
+- model_name: doubao-seed-1-6
+  litellm_params:
+    model: volcengine/ep-20250327141302-lwbp8
+    api_key: os.environ/VOLCENGINE_API_KEY

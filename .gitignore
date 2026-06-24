@@ -1,0 +1,21 @@
+# .env
+.env
+
+# token 使用记录
+litellm_token_usage.json
+
+# 自动生成的文件
+config.gen.yaml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.idea/
+*.swp
+*.swo
+.DS_Store

@@ -1,0 +1,6 @@
+models:
+  doubao-seed-1-6: 2000
+  doubao-seed-2-1-pro: 500000
+  doubao-smart-router: 500000
+  glm-4-7: 9999999
+global: null
