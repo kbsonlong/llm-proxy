@@ -4,25 +4,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-litellm proxy 代理火山方舟（Volcengine ARK）模型，带累计 Token 上限控制。
+litellm proxy 代理火山方舟（Volcengine ARK）模型，带累计 Token 上限控制。v2.0 新增多模态支持：图片生成、语音识别直接在 LiteLLM config 中配置，无需额外代理。
 
-核心架构是两个独立组件：
+核心组件：
 
-1. **sync_endpoints.py** — 调用火山方舟管控面 ListEndpoints API，查询推理接入点列表并生成为 litellm 兼容的 model_list 配置（config.gen.yaml）。可选运行 HTTP 服务定时同步。
-2. **tracker.py** — litellm 的 CustomLogger 回调，在请求前置拦截（async_pre_call_hook）检查配额，在请求成功后（async_log_success_event）累计 token 用量。按模型 + 全局阈值双重检查，超限返回 429。
-
-两者通过 **token_limits.yaml** 共享配额配置：sync_endpoints 负责将新发现的模型加入配额文件（已有用户配置不覆盖），tracker 负责运行时读写该文件。
+1. **sync_endpoints.py** — 调用火山方舟管控面 ListEndpoints API，查询推理接入点并生成为 litellm 兼容的 model_list 配置（config.gen.yaml）。可选 HTTP 服务定时同步。
+2. **tracker.py** — litellm 的自定义 CustomLogger 回调，前置检查配额 + 后置累计 token（含图片生成和 ASR 请求的兼容处理）。
+3. **config.yaml** — 主配置，除了 LLM 模型列表外，还包含图片生成和 ASR 模型条目（使用 `openai/` 前缀 + `api_base` 路由到 ARK 数据面）。
 
 ## 核心文件
 
 | 文件 | 职责 | 归属 |
 |------|------|------|
-| `config.yaml` | litellm 主配置：注册 tracker 回调 + master_key + 模型列表。模型列表可手动维护，也可由 sync_endpoints 管理 | 手动编辑 |
-| `config.gen.yaml` | sync_endpoints 自动生成的模型列表，勿手动编辑 | 自动生成 |
+| `config.yaml` | litellm 主配置：tracker 回调 + 模型列表（含 LLM + 图片生成 + ASR） | 手动编辑 |
+| `config.gen.yaml` | sync_endpoints 自动生成的 LLM 模型列表，勿手动编辑 | 自动生成 |
 | `sync_endpoints.py` | 管控面同步工具：ListEndpoints → config.gen.yaml + token_limits.yaml | 主线代码 |
 | `tracker.py` | 自定义回调：前置配额检查 + 后置用量累计 + 持久化 | 主线代码 |
-| `token_limits.yaml` | 按模型配额 + 全局上限 | 手动编辑（sync_endpoints 会追加新模型） |
-| `docker-compose.yml` | 三服务编排：postgres + litellm-proxy + sync-endpoints | 部署 |
+| `token_limits.yaml` | 按模型配额 + 全局上限（含图片生成模型） | 手动编辑 |
+
+## 模型类型
+
+| 类型 | 配置方式 | 路由 |
+|------|----------|------|
+| LLM 聊天 | `volcengine/ep-xxxxxxxx` | ARK `/api/v3/chat/completions` |
+| 图片生成 | `openai/doubao-seedream-xxx` + `api_base: https://ark.cn-beijing.volces.com/api/v3` | ARK `/api/v3/images/generations` |
+| 语音识别 | `openai/<ark-endpoint-id>` + `api_base: https://ark.cn-beijing.volces.com/api/v3` | ARK `/api/v3/audio/transcriptions` |
+
+图片生成和 ASR 共享 `VOLCENGINE_API_KEY`（与 LLM 相同），复用 `openai/` provider + custom `api_base` 路由到 ARK 数据面。
 
 ## 数据流
 
@@ -33,19 +41,29 @@ litellm proxy 代理火山方舟（Volcengine ARK）模型，带累计 Token 上
 sync_endpoints.py               litellm proxy
      │                              │
      ├─→ config.gen.yaml      ┌────┴────┐
-     │    (model_list)         │ tracker ├─→ litellm_token_usage.json
+     │    (LLM model_list)     │ tracker ├─→ litellm_token_usage.json
      └─→ token_limits.yaml    └─────────┘
               │                     │
               └─────── 共享 ────────┘
+
+                              multimodal requests
+                                    │
+                              litellm proxy (:4000)
+                              ┌─────┼─────────┐
+                              │     │         │
+                         chat     img      audio
+                       completions gen  transcriptions
+                              │     │         │
+                              ▼     ▼         ▼
+                         ARK 数据面 API (/api/v3/)
 ```
 
 ## 关键设计决策
 
-- **两套密钥体系**：管控面（ListEndpoints）用 AK/SK V4 签名认证；数据面（模型推理）用 API Key。对应环境变量 VOLC_AK/VOLC_SK 和 VOLCENGINE_API_KEY。
-- **模型名自动命名**：取火山方舟 `foundation_model.name` 转 kebab-case。可通过 `endpoint_aliases.yaml` 按 Endpoint ID 覆盖。
-- **配额不覆盖**：sync_endpoints 同步 token_limits.yaml 时，已有用户修改过配额的模型保留不动，只追加新模型。
-- **tracker 模式**：APPEND（重启后延续历史用量） / RESET（每次启动清零）。
-- **litellm Settings**：`retry: false` 避免自动重试突破 Token 限流。
+- **两套密钥体系**：管控面（ListEndpoints）用 AK/SK V4 签名认证；数据面（模型推理）用 API Key。
+- **图片生成/ASR 不用额外代理**：通过 LiteLLM 的 `openai/` provider + `api_base` 直接路由到 ARK，复用同一 API Key。
+- **tracker 兼容多模态**：图片生成/ASR 请求的 token 跟踪自动跳过（无 prompt/completion tokens），配额检查依然生效。
+- **其他决策**：同上版（模型名自动 kebab-case、配额不覆盖、retry: false）。
 
 ## 常用命令
 
@@ -59,27 +77,37 @@ python sync_endpoints.py
 # 同步并合并到 config.yaml（覆盖 config.yaml 内 model_list）
 python sync_endpoints.py --merge
 
-# HTTP 服务模式（每 3600s 自动同步，POST /sync 手动触发）
-python sync_endpoints.py --serve --interval 3600
-
-# 本地启动 litellm proxy
+# 本地启动 litellm proxy（含图片生成 + ASR 支持）
 litellm --config config.yaml --config config.gen.yaml --port 4000
 
 # Docker 部署
-python sync_endpoints.py    # 先生产一次 config.gen.yaml
+python sync_endpoints.py
 docker compose up -d
 
-# 查看 token 用量
-cat litellm_token_usage.json
-
-# 手动触发同步（Docker HTTP 服务模式）
-curl -X POST http://localhost:9100/sync
-
-# 测试调用
+# ── 测试 LLM ────────────────────────────────────────────
 curl http://localhost:4000/chat/completions \
-  -H "Authorization: Bearer ${LITELLM_MASTER_KEY}" \
+  -H "Authorization: Bearer ${LITE...Y}" \
   -H "Content-Type: application/json" \
-  -d '{"model": "doubao-pro-32k", "messages": [{"role": "user", "content": "你好"}]}'
+  -d '{"model": "doubao-seed-2-1-pro", "messages": [{"role": "user", "content": "你好"}]}'
+
+# ── 测试图片生成 ─────────────────────────────────────────
+curl http://localhost:4000/v1/images/generations \
+  -H "Authorization: Bearer ${LITE...Y}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "doubao-seedream-5-0",
+    "prompt": "一只可爱的小猫，卡通风格",
+    "size": "1:1",
+    "n": 1
+  }'
+
+# ── 测试语音识别（需先部署 ARK 语音推理接入点） ──────────
+# curl http://localhost:4000/v1/audio/transcriptions \
+#   -H "Authorization: Bearer ${LITE...Y}" \
+#   -F "file=@test.wav" \
+#   -F "model=<your-asr-model-name>"
+
+# 其他：token 用量查看、手动触发 sync 同上版
 ```
 
 ## 环境变量
@@ -88,7 +116,7 @@ curl http://localhost:4000/chat/completions \
 |------|------|------|
 | `VOLC_AK` | 火山方舟管控面 Access Key | 是 |
 | `VOLC_SK` | 火山方舟管控面 Secret Key | 是 |
-| `VOLCENGINE_API_KEY` | 火山方舟数据面 API Key | 是 |
+| `VOLCENGINE_API_KEY` | 火山方舟数据面 API Key（LLM + 图片 + ASR 共用） | 是 |
 | `LITELLM_MASTER_KEY` | litellm 管理密钥 | 是 |
 | `VOLC_REGION` | 地域 (默认 cn-beijing) | 否 |
 | `TOKEN_TRACK_MODE` | APPEND / RESET | 否 |
@@ -99,7 +127,7 @@ curl http://localhost:4000/chat/completions \
 
 ## 注意事项
 
-- 启动 litellm 时必须同时加载 `config.yaml` 和 `config.gen.yaml`（`--config config.yaml --config config.gen.yaml`），缺少 gen 文件会导致模型列表不可用。
-- config.gen.yaml 由 sync_endpoints 自动生成，**请勿手动编辑**。
-- sync_endpoints HTTP 服务监听 `0.0.0.0:9100`，无内置认证，生产环境建议配 nginx 反向代理。
-- tracker 使用模块级单例 (`token_tracker = TokenTracker()`)，由 litellm 的 `callbacks: [tracker.token_tracker]` 加载。
+- 启动时必须同时加载 `config.yaml` 和 `config.gen.yaml`，缺少 gen 文件 LLM 模型列表不可用。
+- 图片生成和 ASR 模型配置在 `config.yaml` 中，**不受** `config.gen.yaml` 影响。
+- sync_endpoints 合并时不会覆盖图片生成和 ASR 模型条目（它们在 `config.yaml` 中）。
+- tracker 对非 LLM 请求（图片生成、ASR）的 token 统计自动跳过，但仍执行配额检查。

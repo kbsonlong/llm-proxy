@@ -23,3 +23,56 @@ model_list:
   litellm_params:
     model: volcengine/ep-20250327141302-lwbp8
     api_key: os.environ/VOLCENGINE_API_KEY
+- model_name: deepseek-v4-pro
+  litellm_params:
+    model: volcengine/ep-20260624164614-smmr2
+    api_key: os.environ/VOLCENGINE_API_KEY
+
+# ── 多模态：图片生成（火山方舟数据面 OpenAI 兼容） ─────
+# 使用 openai/ 前缀 + custom api_base 路由到 ARK 图片生成端点
+- model_name: doubao-seedream-5-0
+  litellm_params:
+    model: openai/doubao-seedream-5-0-260128
+    api_key: os.environ/VOLCENGINE_API_KEY
+    api_base: https://ark.cn-beijing.volces.com/api/v3
+    mode: image_generation
+
+- model_name: doubao-seedream-4-5
+  litellm_params:
+    model: openai/doubao-seedream-4-5-251128
+    api_key: os.environ/VOLCENGINE_API_KEY
+    api_base: https://ark.cn-beijing.volces.com/api/v3
+    mode: image_generation
+
+- model_name: doubao-seedream-4-0
+  litellm_params:
+    model: openai/doubao-seedream-4-0-250828
+    api_key: os.environ/VOLCENGINE_API_KEY
+    api_base: https://ark.cn-beijing.volces.com/api/v3
+    mode: image_generation
+
+# ── 多模态：语音识别（火山方舟数据面 OpenAI 兼容） ─────
+# 需先在 ARK 控制台部署语音模型推理接入点，替换为实际 endpoint_id
+# - model_name: volc-bigasr
+#   litellm_params:
+#     model: openai/<your-ark-asr-endpoint-id>
+#     api_key: os.environ/VOLCENGINE_API_KEY
+#     api_base: https://ark.cn-beijing.volces.com/api/v3
+
+# ── 图片生成别名：兼容 Hermes OpenAI 插件 ────────────────
+# Hermes OpenAI image_gen 插件固定发 model=gpt-image-2
+# 这里做别名，让 LiteLLM 路由到 ARK seadream
+- model_name: gpt-image-2
+  litellm_params:
+    model: openai/doubao-seedream-5-0-260128
+    api_key: os.environ/VOLCENGINE_API_KEY
+    api_base: https://ark.cn-beijing.volces.com/api/v3
+    mode: image_generation
+
+# ── OCR 别名：兼容现有 ARK_MODEL 默认值 ──────────────────
+# ocr_tool.py 的 ARK Vision 默认发 model=ep-20250327141302-lwbp8
+# 这里做别名让 LiteLLM 正确路由
+- model_name: ep-20250327141302-lwbp8
+  litellm_params:
+    model: volcengine/ep-20250327141302-lwbp8
+    api_key: os.environ/VOLCENGINE_API_KEY

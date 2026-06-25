@@ -1,13 +1,19 @@
 models:
+  deepseek-v4-pro: 500000
   doubao-seed-1-6: 2000
   doubao-seed-2-1-pro: 500000
   doubao-smart-router: 500000
   glm-4-7: 500000
-global: 9999999
 
-# fallback 链：当某模型超限时自动转发到候选模型
-# 格式：{model_name: [候选1, 候选2, ...]}
-# 候选按顺序尝试，找到配额充足（已用量+输入量≤限额）的第一个为止
+  # 图片生成模型（token 含义不同，设较低上限）
+  doubao-seedream-5-0: 50
+  doubao-seedream-4-5: 50
+  doubao-seedream-4-0: 50
+
+global: 9999999
 fallbacks:
-  doubao-seed-1-6: [doubao-smart-router, glm-4-7]
-  doubao-seed-2-1-pro: [doubao-smart-router]
+  doubao-seed-1-6:
+  - doubao-smart-router
+  - glm-4-7
+  doubao-seed-2-1-pro:
+  - doubao-smart-router
