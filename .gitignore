@@ -20,3 +20,5 @@ venv/
 *.swo
 .DS_Store
 .serena
+.headroom/
+*.db

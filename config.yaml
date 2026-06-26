@@ -23,7 +23,7 @@ model_list:
   litellm_params:
     model: volcengine/ep-20250327141302-lwbp8
     api_key: os.environ/VOLCENGINE_API_KEY
-- model_name: deepseek-v4-pro
+- model_name: deepseek-v4-flash
   litellm_params:
     model: volcengine/ep-20260624164614-smmr2
     api_key: os.environ/VOLCENGINE_API_KEY
@@ -76,3 +76,24 @@ model_list:
   litellm_params:
     model: volcengine/ep-20250327141302-lwbp8
     api_key: os.environ/VOLCENGINE_API_KEY
+
+# ── ZhipuAI / GLM 模型（智谱订阅计划）─────────────────────
+# 通过 openai/ provider + api_base 路由到智谱 API
+- model_name: glm-5.2
+  litellm_params:
+    model: openai/glm-5.2
+    api_key: os.environ/ZHIPUAI_API_KEY
+    api_base: https://api.z.ai/api/coding/paas/v4
+
+- model_name: glm-5-flash
+  litellm_params:
+    model: openai/glm-5-flash
+    api_key: os.environ/ZHIPUAI_API_KEY
+    api_base: https://api.z.ai/api/coding/paas/v4
+
+# ── DeepSeek 模型 ─────────────────────────────────────────
+- model_name: deepseek-v4-flash
+  litellm_params:
+    model: openai/deepseek-v4-flash
+    api_key: os.environ/DEEPSEEK_API_KEY
+    api_base: https://api.deepseek.com
