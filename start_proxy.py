@@ -1,214 +1,241 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Combined launcher: Headroom compression proxy + LiteLLM proxy.
-
-Architecture:
-  Hermes Agent → Headroom (:8787) → LiteLLM (:4000) → ARK / DeepSeek / ZhipuAI
-                   ^ compression, memory, caching layer
-
-Manages both processes as a single unit:
-  - Starts LiteLLM first (upstream target)
-  - Starts Headroom pointing to LiteLLM
-  - Handles graceful shutdown of both on SIGINT/SIGTERM
+llm-proxy Stack CLI Manager.
+Manages the docker-compose services (litellm, headroom-proxy, image-gen-bridge, sync-endpoints)
+and configures Claude Code settings in ~/.claude/settings.json.
 """
+
+import argparse
+import json
 import os
-import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).parent
 
-# ── Config ──────────────────────────────────────────────────────────────────
-HEADROOM_PORT = int(os.environ.get("HEADROOM_PORT", "8787"))
-LITELLM_PORT = int(os.environ.get("LITELLM_PORT", "4000"))
-LITELLM_TIMEOUT = int(os.environ.get("LITELLM_TIMEOUT", "30"))  # seconds to wait
 
-HEADROOM_BIN = str(PROJECT_DIR / "headroom_wrapper.py")
-LITELLM_BIN = str(Path.home() / ".hermes/hermes-agent/venv/bin/litellm")
-HERMES_PYTHON = str(Path.home() / ".hermes/hermes-agent/venv/bin/python")
+BACKUP_PATH = PROJECT_DIR / ".claude_settings.bak"
 
 
-def load_env():
-    """Load .env from project root into os.environ (not overriding existing)."""
+def load_master_key() -> str:
     env_path = PROJECT_DIR / ".env"
-    if not env_path.exists():
-        return
-    for line in env_path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        key, val = key.strip(), val.strip().strip("\"'")
-        if key:
-            os.environ.setdefault(key, val)
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("LITELLM_MASTER_KEY="):
+                return line.partition("=")[2].strip().strip("\"'")
+    return "PROXY_MANAGED"  # Default fallback
 
 
-def wait_for_ready(url: str, timeout: int = 15, label: str = "service"):
-    """Poll an HTTP endpoint until it responds (any status code)."""
-    import urllib.request
-
-    deadline = time.time() + timeout
-    print(url)
-    while time.time() < deadline:
+def backup_and_update_settings():
+    settings_path = Path.home() / ".claude" / "settings.json"
+    
+    # 1. Read existing settings
+    settings = {}
+    if settings_path.exists():
         try:
-            urllib.request.urlopen(url, timeout=2)
-            return True
-        except (OSError, urllib.error.URLError):
-            time.sleep(0.5)
-    print(f"  ⚠ {label} not ready after {timeout}s", flush=True)
-    return False
+            settings = json.loads(settings_path.read_text())
+        except Exception as e:
+            print(f"⚠ Warning: Failed to parse existing Claude settings: {e}")
+
+    # 2. Prepare keys to backup
+    target_keys = [
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+    ]
+
+    # Only create a backup if it doesn't already exist.
+    if not BACKUP_PATH.exists():
+        backup_data = {}
+        env_dict = settings.get("env", {})
+        for key in target_keys:
+            if key in env_dict:
+                backup_data[key] = env_dict[key]
+            else:
+                backup_data[key] = None
+        
+        try:
+            BACKUP_PATH.write_text(json.dumps(backup_data, indent=2))
+            print(f"📁 Backed up original Claude environment variables to {BACKUP_PATH}")
+        except Exception as e:
+            print(f"⚠ Warning: Failed to create Claude settings backup: {e}")
+
+    # 3. Update with new settings
+    master_key = load_master_key()
+    new_keys = {
+        "ANTHROPIC_AUTH_TOKEN": master_key,
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "glm-5-flash",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-8",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "glm-5.2",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-6",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "glm-5-flash",
+    }
+
+    if "env" not in settings or not isinstance(settings["env"], dict):
+        settings["env"] = {}
+    settings["env"].update(new_keys)
+
+    # Ensure ~/.claude directory exists
+    if not settings_path.parent.exists():
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        settings_path.write_text(json.dumps(settings, indent=2))
+        print(f"✅ Successfully updated Claude settings at {settings_path}")
+    except Exception as e:
+        print(f"❌ Failed to write Claude settings: {e}")
+
+
+def restore_settings():
+    settings_path = Path.home() / ".claude" / "settings.json"
+    
+    if not BACKUP_PATH.exists():
+        print("ℹ No Claude settings backup found. Skipping restore.")
+        return
+
+    try:
+        backup_data = json.loads(BACKUP_PATH.read_text())
+        
+        settings = {}
+        if settings_path.exists():
+            try:
+                settings = json.loads(settings_path.read_text())
+            except Exception as e:
+                print(f"⚠ Warning: Failed to parse existing Claude settings: {e}")
+                return
+
+        env_dict = settings.get("env", {})
+        for key, original_val in backup_data.items():
+            if original_val is None:
+                if key in env_dict:
+                    del env_dict[key]
+            else:
+                env_dict[key] = original_val
+
+        if "env" in settings and not settings["env"]:
+            del settings["env"]
+            
+        settings_path.write_text(json.dumps(settings, indent=2))
+        BACKUP_PATH.unlink()
+        print(f"⏪ Restored original Claude environment variables from backup.")
+    except Exception as e:
+        print(f"❌ Failed to restore Claude settings: {e}")
+
+
+def ensure_host_file(path: Path, default_content: str = ""):
+    """Ensure a file exists on the host, cleaning up if Docker created it as a directory."""
+    if path.exists():
+        if path.is_dir():
+            print(f"🧹 Removing invalid directory '{path.name}' (mis-created by Docker bind-mount)...")
+            import shutil
+            shutil.rmtree(path)
+            path.write_text(default_content)
+    else:
+        print(f"📝 Creating empty file '{path.name}' to prevent directory bind-mount...")
+        path.write_text(default_content)
+
+
+def cmd_up(build=False):
+    print("🚀 Starting docker-compose stack...")
+    
+    # 1. Check critical source files
+    for critical_file in ["config.yaml", "tracker.py"]:
+        p = PROJECT_DIR / critical_file
+        if p.exists() and p.is_dir():
+            print(f"❌ Error: '{critical_file}' is a directory! Please remove it manually (run 'rm -rf {critical_file}') and restore from git.")
+            sys.exit(1)
+
+    # 2. Ensure bind-mounted files exist as files, not directories
+    ensure_host_file(PROJECT_DIR / "config.gen.yaml", "model_list: []\n")
+    ensure_host_file(PROJECT_DIR / "token_limits.yaml", "models: {}\nfallbacks: {}\n")
+    ensure_host_file(PROJECT_DIR / "litellm_token_usage.json", "{}\n")
+
+    # Build up-d command
+    cmd = ["docker", "compose", "up", "-d"]
+    if build:
+        cmd.append("--build")
+
+    # Run docker compose
+    try:
+        subprocess.run(cmd, check=True, cwd=PROJECT_DIR)
+        print("✅ Docker-compose stack started successfully.")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Failed to start docker-compose stack: {e}")
+        sys.exit(1)
+
+    # Update Claude settings
+    backup_and_update_settings()
+
+
+
+def cmd_down():
+    print("🛑 Stopping docker-compose stack...")
+    try:
+        subprocess.run(["docker", "compose", "down"], check=True, cwd=PROJECT_DIR)
+        print("✅ Docker-compose stack stopped successfully.")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Failed to stop docker-compose stack: {e}")
+        sys.exit(1)
+
+    # Restore Claude settings
+    restore_settings()
+
+
+def cmd_sync():
+    print("🔄 Triggering endpoint synchronization...")
+    import urllib.request
+    try:
+        req = urllib.request.Request("http://127.0.0.1:9100/sync", method="POST")
+        with urllib.request.urlopen(req, timeout=10) as response:
+            res_data = json.loads(response.read().decode())
+            if res_data.get("ok"):
+                print(f"✅ Sync complete. Synchronized {res_data.get('endpoints')} endpoints.")
+            else:
+                print(f"❌ Sync failed: {res_data}")
+    except Exception as e:
+        print(f"❌ Failed to connect to sync service: {e}")
+        print("   Make sure the stack is running ('python start_proxy.py up').")
+
+
+def cmd_status():
+    print("📊 Stack Status:")
+    try:
+        subprocess.run(["docker", "compose", "ps"], check=True, cwd=PROJECT_DIR)
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Failed to get docker-compose status: {e}")
 
 
 def main():
-    load_env()
+    parser = argparse.ArgumentParser(description="llm-proxy CLI stack manager")
+    subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # ── 1. Start LiteLLM (background) ──────────────────────────────────────
-    config_files = [
-        str(PROJECT_DIR / "config.yaml"),
-    ]
-    litellm_cmd = [
-        LITELLM_BIN,
-        "--config", config_files[0],
-        "--port", str(LITELLM_PORT),
-        "--use_prisma_db_push",
-        "--drop_params",
-    ]
+    up_parser = subparsers.add_parser("up", help="Start the stack and configure Claude settings")
+    up_parser.add_argument("--build", action="store_true", help="Rebuild the Docker images")
+    
+    subparsers.add_parser("down", help="Stop the stack")
+    subparsers.add_parser("sync", help="Trigger endpoint synchronization")
+    subparsers.add_parser("status", help="Show the status of the stack services")
 
-    os.environ.setdefault(
-        "LITELLM_DATABASE_URL",
-        f"sqlite:///{PROJECT_DIR / 'litellm.db'}",
-    )
+    args = parser.parse_args()
 
-    print(f"\n{'='*60}", flush=True)
-    print(f"  🚀 Starting llm-proxy stack", flush=True)
-    print(f"{'='*60}", flush=True)
-    print(f"  LiteLLM :{LITELLM_PORT}     ({' '.join(litellm_cmd)})", flush=True)
-    print(f"  Headroom :{HEADROOM_PORT}   → LiteLLM :{LITELLM_PORT}", flush=True)
-    print(f"  Hermes   → Headroom :{HEADROOM_PORT}  (via custom provider)", flush=True)
-    print(f"{'='*60}\n", flush=True)
-
-    litellm_proc = subprocess.Popen(
-        litellm_cmd,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-
-    # Wait for LiteLLM to be ready
-    litellm_url = f"http://127.0.0.1:{LITELLM_PORT}/health/readiness"
-    litellm_ready = wait_for_ready(litellm_url, timeout=LITELLM_TIMEOUT, label="LiteLLM")
-    if not litellm_ready:
-        # Check if it started at all
-        time.sleep(2)
-        litellm_ready = wait_for_ready(litellm_url, timeout=10, label="LiteLLM (retry)")
-
-    if not litellm_ready:
-        print("  ❌ LiteLLM failed to start. Check logs above.", flush=True)
-        print(f"     Run manually: {' '.join(litellm_cmd)}", flush=True)
-        litellm_proc.kill()
-        sys.exit(1)
-
-    print(f"  ✅ LiteLLM ready on :{LITELLM_PORT}\n", flush=True)
-
-    # ── 2. Start Headroom (foreground, handles both processes) ──────────────
-    # Headroom now proxies to LiteLLM as the OpenAI-compatible backend.
-    # Extra args from env (e.g. --memory --memory-storage=user)
-    extra_args = os.environ.get("HEADROOM_EXTRA_ARGS", "").strip().split()
-    headroom_cmd = [
-        HERMES_PYTHON, HEADROOM_BIN,
-        "proxy",
-        "--backend", "openai",
-        "--host", "0.0.0.0",
-        "--port", str(HEADROOM_PORT),
-    ]
-    # Add extra args AFTER explicit flags so they can be overridden
-    for arg in extra_args:
-        if arg:
-            headroom_cmd.append(arg)
-
-    print(headroom_cmd)
-    headroom_proc = subprocess.Popen(
-        headroom_cmd,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-
-    # Wait for Headroom to be ready
-    headroom_url = f"http://127.0.0.1:{HEADROOM_PORT}/stats"
-    headroom_ready = wait_for_ready(headroom_url, timeout=15, label="Headroom")
-    if headroom_ready:
-        print(f"  ✅ Headroom ready on :{HEADROOM_PORT}\n", flush=True)
-    else:
-        print(f"  ⚠ Headroom may not be ready yet. Check logs.\n", flush=True)
-
-    # ── 3. Forward both processes' stdout to our stdout ─────────────────────
-    import threading
-
-    def forward_output(proc: subprocess.Popen, prefix: str):
-        try:
-            for line in iter(proc.stdout.readline, ""):
-                print(f"{prefix} {line.rstrip()}", flush=True)
-        except (ValueError, OSError):
-            pass
-
-    threading.Thread(
-        target=forward_output, args=(litellm_proc, "[litellm]"), daemon=True
-    ).start()
-    threading.Thread(
-        target=forward_output, args=(headroom_proc, "[headroom]"), daemon=True
-    ).start()
-
-    # ── 4. Handle shutdown ──────────────────────────────────────────────────
-    shutdown_requested = False
-
-    def shutdown(signum, frame):
-        nonlocal shutdown_requested
-        if shutdown_requested:
-            return  # already shutting down
-        shutdown_requested = True
-        print(f"\n  ⏳ Shutting down...", flush=True)
-        # Headroom first (it's the entry point), then LiteLLM
-        headroom_proc.terminate()
-        try:
-            headroom_proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            headroom_proc.kill()
-        litellm_proc.terminate()
-        try:
-            litellm_proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            litellm_proc.kill()
-        print(f"  ✅ Both proxies stopped.\n", flush=True)
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
-
-    # Wait for either process to exit (monitor mode)
-    while True:
-        time.sleep(1)
-        if litellm_proc.poll() is not None:
-            print(f"  ❌ LiteLLM exited (code {litellm_proc.returncode}). Shutting down Headroom...", flush=True)
-            headroom_proc.terminate()
-            break
-        if headroom_proc.poll() is not None:
-            print(f"  ❌ Headroom exited (code {headroom_proc.returncode}). Shutting down LiteLLM...", flush=True)
-            litellm_proc.terminate()
-            break
-
-    for p in [headroom_proc, litellm_proc]:
-        try:
-            p.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            p.kill()
-    sys.exit(1)
+    if args.command == "up":
+        cmd_up(build=args.build)
+    elif args.command == "down":
+        cmd_down()
+    elif args.command == "sync":
+        cmd_sync()
+    elif args.command == "status":
+        cmd_status()
 
 
 if __name__ == "__main__":

@@ -9,8 +9,7 @@ llm-proxy/
 ├── tracker.py              # Token 追踪器（litellm custom callback）
 ├── token_limits.yaml       # 按模型 Token 配额配置
 ├── sync_endpoints.py       # 火山方舟 Endpoint 同步工具
-├── config.yaml             # litellm proxy 主配置
-├── config.gen.yaml         # 自动生成的模型列表（勿手动编辑）
+├── config.yaml             # litellm proxy 主配置（含自动同步段及用户自定义模型）
 ├── .env                    # 环境变量（密钥）
 ├── docker-compose.yml      # 一键启动（litellm-proxy + sync-endpoints）
 ├── Dockerfile.sync         # sync-endpoints 容器构建
@@ -56,11 +55,11 @@ TOKEN_TRACK_MODE=APPEND
 ### 3. 获取模型列表并启动
 
 ```bash
-# 单次同步（生成 config.gen.yaml）
+# 单次同步（直接自动更新 config.yaml 中的同步段）
 python sync_endpoints.py
 
-# 启动 litellm proxy（需叠加 config.gen.yaml 以加载模型列表）
-litellm --config config.yaml --config config.gen.yaml --port 4000
+# 启动 litellm proxy（直接加载 config.yaml）
+litellm --config config.yaml --port 4000
 ```
 
 ### 4. 测试调用
@@ -80,7 +79,7 @@ curl http://localhost:4000/chat/completions \
 ```bash
 # 1. 准备 .env（见上方）
 
-# 2. 首次手动同步（容器外的 config.gen.yaml 无写入权限问题）
+# 2. 首次手动同步
 python sync_endpoints.py
 
 # 3. 启动全部服务
@@ -96,14 +95,11 @@ cat litellm_token_usage.json
 ## sync-endpoints 详细用法
 
 ```bash
-# 单次同步生成 config.gen.yaml
+# 单次同步（默认直接更新 config.yaml 中的同步段）
 python sync_endpoints.py
 
-# 合并到已有 config.yaml
-python sync_endpoints.py --merge
-
 # 指定输出路径
-python sync_endpoints.py -o /etc/litellm/config.yaml --merge
+python sync_endpoints.py -o /etc/litellm/config.yaml
 
 # HTTP 服务模式（可定时同步）
 python sync_endpoints.py --serve --interval 3600
@@ -111,7 +107,7 @@ python sync_endpoints.py --serve --interval 3600
 
 ### 自动命名
 
-模型名自动取火山方舟 `foundation_model.name`，转为 `kebab-case`。想看对应的 Endpoint ID，查看 `config.gen.yaml`。
+模型名自动取火山方舟 `foundation_model.name`，转为 `kebab-case`。想看对应的 Endpoint ID，可以查看 `config.yaml` 中被同步出来的 `volcengine/ep-xxxx` 部分。
 
 ## Token 配额
 
@@ -141,12 +137,13 @@ global: 10000000               # 全局上限（所有模型合计，可选）
 
 ## 说明
 
+- **多文件管理与 Include 机制**：本项目利用 LiteLLM 的 `include` 机制，将用户手动配置（如图片生成、语音识别、GLM 订阅、插件设置等，存在于 [config.yaml](file:///Users/zengshenglong/Code/GoWorkSpace/llm-proxy/config.yaml) 中）与自动同步生成的火山方舟模型列表（存在于 `config.gen.yaml` 中）进行分离。`sync_endpoints.py` 只负责生成并覆写 `config.gen.yaml`，绝对不会触碰用户的 [config.yaml](file:///Users/zengshenglong/Code/GoWorkSpace/llm-proxy/config.yaml)。
 - **获取模型（ListEndpoints）** 和 **调用模型** 是两套不同的 API，因此需要两套不同的密钥
 - 管控面 API（ListEndpoints）使用 AK/SK V4 签名认证
 - 数据面 API（Chat Completion）使用 API Key 认证
 - ListEndpoints 的 API 版本默认为 `2024-01-01`，可通过 `LIST_ENDPOINTS_VERSION` 环境变量自定义
 - sync-endpoints HTTP 服务监听 `0.0.0.0:9100`，如需安全加固建议配合 nginx 反向代理
-- 启动 litellm proxy 时必须同时加载 `config.gen.yaml`（模型列表居中文件）：`litellm --config config.yaml --config config.gen.yaml`
+- 启动 litellm proxy 仅需要加载 `config.yaml`：`litellm --config config.yaml`
 
 ## litellm UI 管理面板
 

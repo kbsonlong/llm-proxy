@@ -1,0 +1,11 @@
+[project]
+name = "llm-proxy"
+version = "0.1.0"
+requires-python = ">=3.11.10"
+dependencies = [
+    "litellm[proxy]",
+    "PyYAML",
+    "volcengine-python-sdk",
+    "headroom-ai[proxy]",
+    "mcp",
+]

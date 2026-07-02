@@ -2,8 +2,7 @@ services:
   litellm-proxy:
     image: registry.cn-hangzhou.aliyuncs.com/seam/litellm:main-latest
     container_name: litellm-proxy
-    ports:
-      - "4000:4000"
+    network_mode: "host"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./config.gen.yaml:/app/config.gen.yaml:ro
@@ -13,9 +12,6 @@ services:
     env_file:
       - .env
     environment:
-      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY}"
-      VOLCENGINE_API_KEY: "${VOLCENGINE_API_KEY}"
-      TOKEN_TRACK_MODE: "${TOKEN_TRACK_MODE:-APPEND}"
       TOKEN_DB_PATH: "/root/.litellm_token_usage.json"
       TOKEN_LIMITS_PATH: "/app/token_limits.yaml"
       PYTHONPATH: "/app"
@@ -24,32 +20,74 @@ services:
       - "/app/config.yaml"
       - "--port"
       - "4000"
+      - "--drop_params"
+      - "--detailed_debug"
     restart: unless-stopped
 
-  sync-endpoints:
+  headroom-proxy:
     build:
-      dockerfile: Dockerfile.sync
-    container_name: sync-endpoints
-    ports:
-      - "9100:9100"
+      context: .
+      dockerfile: Dockerfile.headroom
+    container_name: headroom-proxy
+    network_mode: "host"
     volumes:
-      - ./config.gen.yaml:/app/config.gen.yaml
-      - ./config.yaml:/app/config.yaml
+      - ./.headroom:/app/.headroom
+      - ./headroom_wrapper.py:/app/headroom_wrapper.py
     env_file:
       - .env
     environment:
-      VOLC_AK: "${VOLC_AK}"
-      VOLC_SK: "${VOLC_SK}"
+      LITELLM_PORT: "4000"
+      HEADROOM_PORT: "8787"
+      OPENAI_TARGET_API_URL: "http://127.0.0.1:4000/v1"
+      HEADROOM_MEMORY_DB_PATH: "/app/.headroom/memory.db"
+    command:
+      - "proxy"
+      - "--backend"
+      - "openai"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8787"
+    restart: unless-stopped
+    depends_on:
+      - litellm-proxy
+
+  image-gen-bridge:
+    image: python:3.11-slim
+    container_name: image-gen-bridge
+    network_mode: "host"
+    volumes:
+      - ./image_gen_bridge.py:/app/image_gen_bridge.py:ro
+      - .env:/app/.env:ro
+    environment:
+      PROXY_URL: "http://127.0.0.1:4000"
+    command:
+      - "python"
+      - "/app/image_gen_bridge.py"
+      - "--port"
+      - "4001"
+    restart: unless-stopped
+    depends_on:
+      - litellm-proxy
+
+  sync-endpoints:
+    build:
+      context: .
+      dockerfile: Dockerfile.sync
+    container_name: sync-endpoints
+    network_mode: "host"
+    volumes:
+      - ./config.gen.yaml:/app/config.gen.yaml
+    env_file:
+      - .env
     command:
       - "--serve"
       - "--port"
       - "9100"
       - "--interval"
       - "3600"
-      - "--merge"
-      - "/app/config.yaml"
       - "-o"
-      - "/app/config.yaml"
+      - "/app/config.gen.yaml"
     restart: unless-stopped
     depends_on:
       - litellm-proxy

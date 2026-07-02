@@ -22,7 +22,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
-PROXY_URL = "http://localhost:4000"
+PROXY_URL = os.environ.get("PROXY_URL", "http://localhost:4000")
 MIN_PIXELS = 1920 * 1920  # 3,686,400
 
 

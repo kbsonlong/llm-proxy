@@ -262,35 +262,18 @@ def write_config(
     config: dict,
     output: Path,
     header: str = "# 由 sync_endpoints 自动生成 — 请勿手动编辑\n",
-    preserve_config: Path | None = None,
 ) -> None:
-    """写入 litellm 配置。
-
-    如果 preserve_config 指向已有配置文件，会保留其中的 litellm_settings、
-    general_settings 等顶层字段，只替换 model_list。
-    """
-    result: dict = {}
-
-    if preserve_config and preserve_config.exists():
-        try:
-            existing = yaml.safe_load(preserve_config.read_text()) or {}
-            # 保留非 model_list 的顶层字段
-            for k, v in existing.items():
-                if k != "model_list":
-                    result[k] = v
-        except Exception:
-            pass
-
-    result["model_list"] = config.get("model_list", [])
-
+    """写入 litellm 配置。"""
+    result = {
+        "model_list": config.get("model_list", [])
+    }
     content = header + yaml.dump(
         result,
         default_flow_style=False,
         allow_unicode=True,
         sort_keys=False,
     )
-    with open(output, "w") as f:
-        f.write(content)
+    output.write_text(content)
     print(f"\n已写入 {output.resolve()}")
 
 
@@ -308,13 +291,6 @@ def main():
         "-o",
         default="config.gen.yaml",
         help="输出路径（默认 config.gen.yaml）",
-    )
-    parser.add_argument(
-        "--merge",
-        "-m",
-        nargs="?",
-        const="config.yaml",
-        help="与已有配置文件合并（默认 config.yaml）",
     )
     parser.add_argument(
         "--alias",
@@ -356,13 +332,8 @@ def main():
     print(f"\n同步 token_limits.yaml（新模型默认 {DEFAULT_MODEL_LIMIT:,} token）...")
     sync_token_limits(items, aliases, Path("token_limits.yaml"))
 
-    existing = load_existing_config(Path(args.merge)) if args.merge else None
-    if existing:
-        print(f"已读取 {len(existing)} 项现有配置")
-
-    config = generate_config(items, aliases, merge_with=existing)
-    preserve = Path(args.merge) if args.merge else None
-    write_config(config, Path(args.output), preserve_config=preserve)
+    config = generate_config(items, aliases, merge_with=None)
+    write_config(config, Path(args.output))
 
 
 # ── HTTP 服务模式（可选） ─────────────────────────────────────
@@ -376,14 +347,8 @@ def run_server(args):
             items = list_endpoints()
             aliases = load_aliases(Path(args.alias))
             sync_token_limits(items, aliases, Path("token_limits.yaml"))
-            existing = (
-                load_existing_config(Path(args.merge))
-                if args.merge
-                else None
-            )
-            config = generate_config(items, aliases, merge_with=existing)
-            preserve = Path(args.merge) if args.merge else None
-            write_config(config, Path(args.output), preserve_config=preserve)
+            config = generate_config(items, aliases, merge_with=None)
+            write_config(config, Path(args.output))
             return items
 
         def do_POST(self):
@@ -438,14 +403,9 @@ def run_server(args):
                     config = generate_config(
                         items,
                         load_aliases(Path(args.alias)),
-                        merge_with=(
-                            load_existing_config(Path(args.merge))
-                            if args.merge
-                            else None
-                        ),
+                        merge_with=None,
                     )
-                    preserve = Path(args.merge) if args.merge else None
-                    write_config(config, Path(args.output), preserve_config=preserve)
+                    write_config(config, Path(args.output))
                     print(f"[定时同步] 完成，共 {len(items)} 个接入点")
                 except Exception as e:
                     print(f"[定时同步] 失败: {e}", file=sys.stderr)

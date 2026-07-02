@@ -1,3 +1,6 @@
-litellm
+litellm[proxy]
 PyYAML
 volcengine-python-sdk
+headroom-ai[proxy]
+mcp
+

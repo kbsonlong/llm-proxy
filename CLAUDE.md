@@ -8,17 +8,16 @@ litellm proxy 代理火山方舟（Volcengine ARK）模型，带累计 Token 上
 
 核心组件：
 
-1. **sync_endpoints.py** — 调用火山方舟管控面 ListEndpoints API，查询推理接入点并生成为 litellm 兼容的 model_list 配置（config.gen.yaml）。可选 HTTP 服务定时同步。
+1. **sync_endpoints.py** — 调用火山方舟管控面 ListEndpoints API，查询推理接入点，并在 `config.yaml` 中通过 `# --sync-start--` 和 `# --sync-end--` 分隔符自动更新同步部分。可选 HTTP 服务定时同步。
 2. **tracker.py** — litellm 的自定义 CustomLogger 回调，前置检查配额 + 后置累计 token（含图片生成和 ASR 请求的兼容处理）。
-3. **config.yaml** — 主配置，除了 LLM 模型列表外，还包含图片生成和 ASR 模型条目（使用 `openai/` 前缀 + `api_base` 路由到 ARK 数据面）。
+3. **config.yaml** — 主配置，除了自动同步的 LLM 模型列表外，还包含图片生成和 ASR 模型条目（使用 `openai/` 前缀 + `api_base` 路由到 ARK 数据面）。
 
 ## 核心文件
 
 | 文件 | 职责 | 归属 |
 |------|------|------|
-| `config.yaml` | litellm 主配置：tracker 回调 + 模型列表（含 LLM + 图片生成 + ASR） | 手动编辑 |
-| `config.gen.yaml` | sync_endpoints 自动生成的 LLM 模型列表，勿手动编辑 | 自动生成 |
-| `sync_endpoints.py` | 管控面同步工具：ListEndpoints → config.gen.yaml + token_limits.yaml | 主线代码 |
+| `config.yaml` | litellm 主配置：tracker 回调 + 模型列表（含动态同步的火山模型和手动编辑的模型） | 混合管理 |
+| `sync_endpoints.py` | 管控面同步工具：ListEndpoints → 更新 config.yaml 中的同步段 + token_limits.yaml | 主线代码 |
 | `tracker.py` | 自定义回调：前置配额检查 + 后置用量累计 + 持久化 | 主线代码 |
 | `token_limits.yaml` | 按模型配额 + 全局上限（含图片生成模型） | 手动编辑 |
 
@@ -40,8 +39,8 @@ litellm proxy 代理火山方舟（Volcengine ARK）模型，带累计 Token 上
      ▼                          │
 sync_endpoints.py               litellm proxy
      │                              │
-     ├─→ config.gen.yaml      ┌────┴────┐
-     │    (LLM model_list)     │ tracker ├─→ litellm_token_usage.json
+     ├─→ config.yaml          ┌────┴────┐
+     │    (delimited section)  │ tracker ├─→ litellm_token_usage.json
      └─→ token_limits.yaml    └─────────┘
               │                     │
               └─────── 共享 ────────┘
@@ -71,14 +70,11 @@ sync_endpoints.py               litellm proxy
 # 安装依赖
 pip install -r requirements.txt
 
-# 同步火山方舟模型列表 → 生成 config.gen.yaml
+# 同步火山方舟模型列表 → 更新 config.yaml
 python sync_endpoints.py
 
-# 同步并合并到 config.yaml（覆盖 config.yaml 内 model_list）
-python sync_endpoints.py --merge
-
 # 本地启动 litellm proxy（含图片生成 + ASR 支持）
-litellm --config config.yaml --config config.gen.yaml --port 4000
+litellm --config config.yaml --port 4000
 
 # Docker 部署
 python sync_endpoints.py
@@ -127,7 +123,6 @@ curl http://localhost:4000/v1/images/generations \
 
 ## 注意事项
 
-- 启动时必须同时加载 `config.yaml` 和 `config.gen.yaml`，缺少 gen 文件 LLM 模型列表不可用。
-- 图片生成和 ASR 模型配置在 `config.yaml` 中，**不受** `config.gen.yaml` 影响。
-- sync_endpoints 合并时不会覆盖图片生成和 ASR 模型条目（它们在 `config.yaml` 中）。
+- 启动时仅需加载 `config.yaml`（在 [config.yaml](file:///Users/zengshenglong/Code/GoWorkSpace/llm-proxy/config.yaml) 中通过 `include` 机制自动加载并融合了 `config.gen.yaml`）。
+- `sync_endpoints.py` 只负责生成并更新 `config.gen.yaml`，完全不会触碰在 [config.yaml](file:///Users/zengshenglong/Code/GoWorkSpace/llm-proxy/config.yaml) 中手动配置的模型条目（例如图片生成、ASR 和 GLM/DeepSeek 等手工配置）。
 - tracker 对非 LLM 请求（图片生成、ASR）的 token 统计自动跳过，但仍执行配额检查。
