@@ -10,7 +10,6 @@ models:
   doubao-seedream-4-5: 50
   doubao-seedream-4-0: 50
 
-global: 9999999
 fallbacks:
   doubao-seed-1-6:
   - doubao-smart-router

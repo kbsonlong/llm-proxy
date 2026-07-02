@@ -67,7 +67,6 @@ def main():
     # ── 1. Start LiteLLM (background) ──────────────────────────────────────
     config_files = [
         str(PROJECT_DIR / "config.yaml"),
-        str(PROJECT_DIR / "config.gen.yaml"),
     ]
     litellm_cmd = [
         LITELLM_BIN,
@@ -76,10 +75,6 @@ def main():
         "--use_prisma_db_push",
         "--drop_params",
     ]
-    # Add config.gen.yaml only if it exists
-    if Path(config_files[1]).exists():
-        litellm_cmd.insert(litellm_cmd.index("--port"), "--config")
-        litellm_cmd.insert(litellm_cmd.index("--port"), config_files[1])
 
     os.environ.setdefault(
         "LITELLM_DATABASE_URL",
